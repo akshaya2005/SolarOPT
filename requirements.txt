@@ -1,0 +1,8 @@
+pvlib
+pandas
+numpy
+pyarrow
+requests
+python-dotenv
+pytest
+ruff
