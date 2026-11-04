@@ -1,9 +1,8 @@
 # Data contract
 
-Status: **proposed** — defaults below are strawman values to unblock the checkpoint.
-Confirm or change them as a team before the data/model handoff locks in; update this
-file (not a side channel) when anything changes, since both pipeline and frontend code
-depend on it.
+Status: **implemented checkpoint contract**. The browser bundle has schema version
+`1.0`. Physical defaults remain configurable assumptions. Update this document and
+the export version together when making a breaking change for frontend consumers.
 
 ## Weather data contract (fetch_nsrdb.py -> preprocess.py -> energy_model.py)
 
@@ -51,7 +50,17 @@ lat = df.attrs["latitude"]
 lon = df.attrs["longitude"]
 elevation = df.attrs["elevation"]
 ```
-Pass `df` directly to pvlib modeling chains (e.g., `pvlib.modelchain.ModelChain.run_model(df)`), as column names strictly follow pvlib weather conventions.
+NSRDB's API attribute is `surface_albedo`, returned as `Surface Albedo` in the raw
+CSV. Preprocessing normalizes it to `surface_albedo`, which is used consistently
+in the cleaned weather schema. `energy_model.py` adapts this source field to
+pvlib's `albedo` argument when calling the irradiance model. This naming difference
+comes from the two external interfaces. When using `ModelChain.run_model` directly,
+rename the input column with `df.rename(columns={"surface_albedo": "albedo"})`.
+
+Annual energy calculations additionally require a complete UTC calendar year,
+including leap day, matching the requested year and metadata. A valid shorter
+period from preprocessing is accepted only by `simulate_configuration` for hourly
+diagnostics, never as an annual energy total.
 
 ## Location grid
 
@@ -88,11 +97,49 @@ One table per location, long format:
 | tilt     | float | degrees                      |
 | azimuth  | float | degrees                      |
 | year     | int   |                               |
-| kwh      | float | annual energy output         |
+| kwh      | float | annual AC energy for the configured PV system, after losses and inverter clipping |
 
 Stored as `data/processed/energy_<location>.parquet` (small enough to commit once
 real). This one table is the single source read by both the optimizer and the
 frontend heatmaps — don't fork a second format for either consumer.
+
+**Implemented energy assumptions:** fixed, monofacial panels; 1 kW DC STC reference
+capacity; DC/AC nameplate ratio 1.2; nominal inverter efficiency 0.96; temperature
+coefficient -0.004/°C; aggregate DC losses 14%; SAPM open-rack glass/polymer thermal
+parameters. Defaults, supported thermal presets, and validation are defined in
+`pipeline/system_config.py` through `SystemConfig` and `DEFAULT_SYSTEM_CONFIG`.
+Both the energy model and CLI reference these shared defaults. Output scales with capacity
+when the other assumptions, including DC/AC ratio, are held fixed. A site-specific
+system requires appropriate mounting, capacity, inverter, and loss inputs.
+
+For future web/API integration, construct a configuration per request with
+`SystemConfig(**settings)` and pass it as `system=` to either modeling function.
+Omitted fields use the shared defaults; instances are immutable. Use
+`dataclasses.asdict(DEFAULT_SYSTEM_CONFIG)` to expose defaults to the frontend and
+`dataclasses.asdict(system)` to serialize the selected settings. Web request handling
+is not implemented yet.
+
+`DataFrame.attrs` records `system` (the complete configuration), `energy_basis`
+(`AC kWh`), `years`, `requested_location`, `weather_sources` (actual grid coordinates,
+elevation, source version, location ID, record count and timestamp bounds per year),
+`models`, and `pvlib_version`. These attributes survive Parquet serialization.
+All years must refer to the same grid point and elevation.
+
+`compute_energy_table(location, years, tilts, azimuths, *, system=None,
+weather_by_year=None, raw_dir=None)` fetches and preprocesses once per year by
+default. Supplying a complete `weather_by_year` mapping uses already-cleaned frames
+without network access. The five table columns remain unchanged for the optimizer.
+
+`simulate_configuration(weather, tilt, azimuth, *, system=None)` provides hourly
+diagnostics: `poa_global` and `effective_irradiance` (W/m²), `temp_cell` (°C),
+`dc_w` (after aggregate DC losses), `ac_w` (after inverter losses/clipping), and
+`kwh` (AC energy over the represented one-hour interval). Tilt is measured from
+horizontal; azimuth is clockwise from north, with south at 180°. Azimuth 360° is
+normalized to 0°, and duplicate configurations are rejected.
+
+Historical annual values are modeled outcomes under each year's weather. Their
+mean can support an expected-production estimate; the optimizer's risk-adjusted
+score is a separate quantity, not an energy forecast or confidence bound.
 
 ## Optimizer output (optimize.py -> frontend)
 
@@ -110,16 +157,50 @@ JSON, one object per location:
     "tmy_best": { "tilt": 35, "azimuth": 170, "score": 1205.0, "representative_year": 2019 }
   },
   "per_year": { "2018": 1200.1, "2019": 1260.3, "2020": 1245.0 },
-  "held_out_test_score": 1228.7
+  "held_out_test_score": 1245.0,
+  "train_years": [2018, 2019],
+  "held_out_years": [2020]
 }
 ```
 
 `baselines.lat_tilt` is `null` if latitude wasn't supplied. `tilt`/`azimuth` in both
-`recommended` and `baselines` are snapped to the nearest value actually present in
-the configuration grid. `tmy_best.representative_year` is a proxy for a true TMY
+`recommended` and `baselines` refer to pairs actually present in the configuration
+grid. The latitude baseline chooses the pair minimizing squared angular distance
+to `(latitude, 180)`, breaking ties by smaller tilt then azimuth. On a full grid this
+is equivalent to independently snapping both angles; sparse grids cannot produce
+nonexistent baseline pairs. `tmy_best.representative_year` is a proxy for a true TMY
 (the train year whose mean kwh across all configs is closest to the mean across
 train years) — see [design_decisions.md](design_decisions.md) for why.
 
 Exact field names/values here depend on the decisions in
 [design_decisions.md](design_decisions.md) — update this schema in lockstep with that
 doc.
+
+The optimizer requires one finite nonnegative kWh value per configuration-year and
+the same year set for all configurations. Duplicates, missing years, invalid angles,
+negative/nonfinite lambda, and nonchronological splits are rejected. Population
+standard deviation (`ddof=0`) is used; a single-year spread is zero, not evidence
+of long-term stability. Recommendation and baseline scores use training years only.
+
+## Browser bundle (`pipeline.run` -> `web/public/data/<location>.json`)
+
+`pipeline/export.py` derives this JSON from the canonical energy table; it does not
+run a second energy model or maintain a separate set of results.
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | String `"1.0"` |
+| `metadata` | Energy-table attributes: `system`, `energy_basis`, `years`, `requested_location`, `weather_sources`, `models`, `pvlib_version` |
+| `recommendation` | Optimizer output above, including explicit training/held-out years |
+| `configurations` | One object per modeled tilt/azimuth pair, sorted by tilt then azimuth |
+
+Each configuration contains `tilt`, `azimuth`, `per_year` (year-string -> AC kWh),
+`training`, and `held_out`. Each statistics object contains `count`, `mean_kwh`,
+`std_kwh`, `min_kwh`, `max_kwh`, and `score`; `held_out` is `null` if no years are
+held out. There are no NaN/Infinity values in the JSON. A single file is replaced
+atomically after validation, so readers do not see a partially written bundle.
+
+Use training statistics for heatmaps/ranking and held-out statistics for evaluation.
+The historical minimum and maximum are observed model outcomes, not confidence
+bounds. Parameter changes require a new simulation except for reranking with lambda.
+See [frontend_handoff.md](frontend_handoff.md) for concrete usage and limitations.

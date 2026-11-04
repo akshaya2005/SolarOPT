@@ -5,6 +5,55 @@ the optimizer can be built now. Each item needs a team sign-off (or a deliberate
 change) before the midterm checkpoint, since it determines what the optimizer
 actually computes.
 
+## Energy estimation
+
+Implemented in `energy_model.py` using pvlib functions, with solar geometry reused
+across the configuration grid for each year:
+
+1. NREL SPA solar position at the actual NSRDB grid point, elevation and native UTC
+   timestamps; extraterrestrial irradiance and relative airmass.
+2. Perez-Driesse transposition of DNI/GHI/DHI onto the panel, including the measured
+   hourly surface albedo for ground reflection.
+3. Physical angle-of-incidence transmission loss on the direct component. Diffuse
+   irradiance is retained without an additional IAM or spectral correction, matching
+   pvlib ModelChain's standard direct/diffuse effective-irradiance treatment.
+4. SAPM cell temperature from incident irradiance, ambient temperature and 10 m wind.
+5. PVWatts DC power from effective irradiance, cell temperature, DC nameplate and
+   temperature coefficient; a configurable aggregate DC derate.
+6. PVWatts inverter conversion including part-load efficiency and AC clipping. Its
+   DC input limit is AC nameplate / nominal efficiency, not the array's DC nameplate.
+7. Rectangular hourly integration: `annual_kwh = sum(ac_w * 1 hour) / 1000`.
+   Each hourly sample represents one hour, including the last; leap years retain
+   all 8,784 hours. Native timestamps are preserved without a second midpoint shift.
+
+The 1 kW reference system defaults and validation live in
+`pipeline/system_config.py` and are documented in [data_contract.md](data_contract.md).
+The energy model and CLI use this shared configuration, which can later be constructed
+from webapp settings per request. These are transparent generic assumptions,
+not inferred equipment specifications. Roof mounting should use an appropriate
+SAPM thermal preset rather than assuming an open rack.
+
+Below-horizon output is zero. Invalid daytime calculations raise an error rather
+than being filled with zeros. Complete annual data, finite weather values, valid
+coordinates, and consistent grid points are checked before annual aggregation.
+The NSRDB irradiance already incorporates cloud effects; cloud classifications
+and fill flags are not applied as additional irradiance discounts.
+
+This is a fixed-system historical simulation, not measured generation or a future
+weather forecast. There is no explicit building/terrain shading, row shading,
+bifacial gain, snow accumulation, time-varying soiling, or aging model. The aggregate
+loss factor is a user assumption, not a site-specific simulation of those effects.
+Hourly sampling approximates energy and clipping within the hour.
+
+Tests compare with a separately configured pvlib ModelChain and check analytical
+STC conversion, annual/leap-year integration, clipping, and physical sensitivities.
+ModelChain agreement is an implementation cross-check, not independent field validation.
+
+Model references: [Perez-Driesse](https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.irradiance.perez_driesse.html),
+[SAPM cell temperature](https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.temperature.sapm_cell.html),
+[PVWatts DC](https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.pvsystem.pvwatts_dc.html),
+[PVWatts inverter](https://pvlib-python.readthedocs.io/en/stable/reference/generated/pvlib.inverter.pvwatts.html).
+
 ## Robustness objective
 
 Proposal: `score = mean(kwh) - lambda * std(kwh)` across years, with `lambda`
@@ -48,6 +97,12 @@ first).
 ...)` takes the split as an explicit argument rather than picking it itself — whoever
 wires up the full pipeline decides the actual split point once real year coverage is
 known, and passes it in.
+
+The checkpoint runner now takes this split through `--train-years`, rejects earlier
+held-out years, and exports both year lists. Browser bundles retain per-configuration
+training and held-out statistics so baseline comparisons and the lambda slider can
+use the same annual energy table. Missing/duplicate configuration-years are rejected
+before scoring; see [frontend_handoff.md](frontend_handoff.md).
 
 ## Validation
 

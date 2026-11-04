@@ -18,9 +18,13 @@ from pipeline.preprocess import (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REAL_SAMPLE_PATH = REPO_ROOT / "data" / "raw" / "995709_39.62_-104.61_2023.csv"
 if not REAL_SAMPLE_PATH.is_file():
-    alt_path = REPO_ROOT.parent / "995709_39.62_-104.61_2023.csv"
-    if alt_path.is_file():
-        REAL_SAMPLE_PATH = alt_path
+    for alt_path in (
+        REPO_ROOT / "data" / "raw" / "nsrdb_39.6200_-104.6100_2023.csv",
+        REPO_ROOT.parent / "995709_39.62_-104.61_2023.csv",
+    ):
+        if alt_path.is_file():
+            REAL_SAMPLE_PATH = alt_path
+            break
 
 
 def test_load_and_clean_sample_fixture(sample_24h_csv_path: Path):

@@ -6,6 +6,9 @@ data and the pvlib energy model.
 
 ## Setup
 
+Use Python **3.12 or newer**. Direct Python dependencies are pinned to the versions
+used for the checkpoint checks.
+
 ### Pipeline (Python)
 
 **Windows (PowerShell):**
@@ -47,6 +50,42 @@ npm run dev
 
 ## Running the Data Pipeline
 
+### Checkpoint handoff: ready-to-use visualization data
+
+Real modeled samples are included in `web/public/data/miami_fl.json` (2018–2025)
+and `web/public/data/denver_co.json` (2023). Frontend developers can load these files
+immediately without a Python environment or NSRDB credentials. See
+[the frontend handoff guide](docs/frontend_handoff.md) for fields and JavaScript examples.
+
+To run all stages from coordinates with the default system:
+
+```bash
+python -m pipeline.run --name "Miami, FL" --lat 25.7617 --lon -80.1918 \
+  --years 2018 2019 2020 2021 2022 2023 2024 2025 \
+  --train-years 2018 2019 2020 2021 2022 2023 2024
+```
+
+This fetches/caches weather, preprocesses it, models the 361 configurations, selects
+on the training years, and writes `data/processed/energy_miami_fl.parquet` plus
+`web/public/data/miami_fl.json`. All other requested years are held out and must be
+later than the training years. For a single-year demo, pass that year as both
+`--years` and `--train-years`; held-out results are then `null`.
+
+Use `--system-config path/to/system.json` to provide overrides such as
+`{"capacity_kw": 5}`. Use `--lambda 0.5` to set the robustness weight and
+`--output-dir` to choose where the dashboard bundle is written. To rebuild a bundle
+from a saved energy table without downloading or recomputing weather:
+
+```bash
+python -m pipeline.run --energy-table data/processed/energy_miami_fl.parquet \
+  --train-years 2018 2019 2020 2021 2022 2023 2024
+```
+
+The checkpoint pipeline is an offline/precomputed workflow. Name/address geocoding,
+automatic year discovery, a hosted request API, background jobs, and deployment are
+not implemented. Run Python with credentials on the data side; share only the derived
+JSON with the frontend.
+
 ### Ingestion & Preprocessing (Implemented)
 
 ```bash
@@ -62,18 +101,46 @@ Raw NSRDB pulls are not committed — they're cached locally in `data/raw/` via
 If a valid raw file is already in `data/raw/`, `fetch_nsrdb` reuses it automatically
 without making a network request.
 
-### Planned Integration (Downstream Modules in Development)
+### Energy Estimation (Implemented)
 
-Once downstream energy modeling and optimization components are implemented by teammates,
-the complete pipeline will run:
+Start from a location and explicit historical years. The energy model fetches or
+reuses raw weather, preprocesses it, and evaluates the full 361-orientation grid:
 
 ```bash
-# Step 3: Compute energy production table across tilt x azimuth angles
-python -m pipeline.energy_model     # builds data/processed/energy_<location>.parquet
-
-# Step 4: Run robustness-aware configuration search
-python -m pipeline.optimize         # writes the recommendation JSON the dashboard reads
+python -m pipeline.energy_model --name "Denver, CO" --lat 39.62 --lon -104.61 \
+  --years 2022 2023 --capacity-kw 5
+# writes data/processed/energy_denver_co.parquet
 ```
+
+The output contains annual **AC kWh**, accounting for panel orientation, direct and
+diffuse sunlight, ground reflection, cell temperature, incidence losses, aggregate
+system losses, and inverter efficiency/clipping. The default is a 1 kW DC open-rack
+reference system; use `--capacity-kw`, `--dc-ac-ratio`, `--losses-percent`, and
+`--temperature-model` for the system being modeled. `--inverter-efficiency` and
+`--gamma-pdc` also override the corresponding system settings. Run `--help` for grid and output
+options. The physical assumptions and source metadata are saved with the table.
+
+All system defaults and validation live in `pipeline/system_config.py`. Python callers
+can import `SystemConfig` from that module and pass `system=SystemConfig(capacity_kw=5)`
+to either modeling function. A future web API can construct the same model from user settings.
+
+For already-preprocessed data, pass `weather_by_year={2023: df}` to
+`compute_energy_table`; `simulate_configuration(df, tilt=35, azimuth=180)` returns
+hourly irradiance, cell temperature, power and energy for one orientation.
+
+The optimizer can consume this table directly:
+
+```python
+import pandas as pd
+from pipeline.optimize import recommend_configuration
+
+table = pd.read_parquet("data/processed/energy_denver_co.parquet")
+result = recommend_configuration(table, train_years=[2022], latitude=39.62)
+```
+
+This two-year example illustrates the interface; use more historical years to
+assess variability. Year availability discovery and location-name geocoding remain
+separate integration work; `pipeline.run` now handles dashboard JSON export.
 
 ## Testing
 
@@ -86,7 +153,8 @@ pytest -v
 - **Offline testing:** Unit tests run completely offline without hitting the NSRDB API,
   using synthetic SAM CSV fixtures generated dynamically in `tests/conftest.py`.
 - **Real dataset test:** The full-year 2023 Denver dataset test (`test_load_and_clean_full_real_sample`)
-  runs automatically whenever `995709_39.62_-104.61_2023.csv` is present in `data/raw/`.
+  runs automatically whenever `995709_39.62_-104.61_2023.csv` or the pipeline's
+  `nsrdb_39.6200_-104.6100_2023.csv` is present in `data/raw/`.
   If the file is absent on a fresh clone, the test is skipped gracefully without failing the suite.
 
 ## Repo layout
@@ -101,8 +169,11 @@ solaropt/
 ├── pipeline/
 │   ├── fetch_nsrdb.py    # NSRDB API pulls & caching (implemented)
 │   ├── preprocess.py     # Cleaning & validation -> Parquet (implemented)
-│   ├── energy_model.py   # pvlib model: location x tilt x azimuth x year -> kWh (in development)
-│   └── optimize.py       # Robustness-aware configuration search (in development)
+│   ├── energy_model.py   # pvlib model: location x tilt x azimuth x year -> AC kWh
+│   ├── system_config.py  # Shared PV system defaults, thermal presets, and validation
+│   ├── run.py            # One-command pipeline and offline dashboard export
+│   ├── export.py         # Versioned JSON derived from the energy table
+│   └── optimize.py       # Robustness-aware configuration search (Python API)
 ├── tests/                # Offline unit tests & fixtures (conftest.py, test_fetch_nsrdb, test_preprocess)
 ├── data/                 # raw/ (gitignored); processed/ (holds small, committed outputs)
 └── web/                  # Vite + React frontend (three, leaflet, and plotly dependencies scaffolded)
