@@ -105,11 +105,20 @@ JSON, one object per location:
   "objective": "mean_minus_lambda_std",
   "lambda": 0.5,
   "score": 1234.5,
-  "baseline": { "tilt": 39.7, "azimuth": 180, "score": 1180.2 },
+  "baselines": {
+    "lat_tilt": { "tilt": 40, "azimuth": 180, "score": 1180.2 },
+    "tmy_best": { "tilt": 35, "azimuth": 170, "score": 1205.0, "representative_year": 2019 }
+  },
   "per_year": { "2018": 1200.1, "2019": 1260.3, "2020": 1245.0 },
   "held_out_test_score": 1228.7
 }
 ```
+
+`baselines.lat_tilt` is `null` if latitude wasn't supplied. `tilt`/`azimuth` in both
+`recommended` and `baselines` are snapped to the nearest value actually present in
+the configuration grid. `tmy_best.representative_year` is a proxy for a true TMY
+(the train year whose mean kwh across all configs is closest to the mean across
+train years) — see [design_decisions.md](design_decisions.md) for why.
 
 Exact field names/values here depend on the decisions in
 [design_decisions.md](design_decisions.md) — update this schema in lockstep with that
