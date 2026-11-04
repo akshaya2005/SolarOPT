@@ -193,3 +193,58 @@ def test_recommend_configuration_rejects_train_years_not_in_table():
     table = _make_table("Denver, CO", [(20.0, 180.0, 2018, 900.0)])
     with pytest.raises(ValueError, match="not present in energy_table"):
         recommend_configuration(table, train_years=[2018, 2099])
+
+
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf"), True, "0.5"])
+def test_rejects_invalid_risk_weight(value):
+    table = _make_table("Denver", [(20, 180, 2023, 1000)])
+    with pytest.raises(ValueError, match="lambda"):
+        recommend_configuration(table, [2023], lambda_=value)
+
+
+@pytest.mark.parametrize(
+    "mutate,match",
+    [
+        (lambda df: pd.concat([df, df.iloc[[0]]]), "Duplicate configuration-year"),
+        (lambda df: df.iloc[:-1], "same complete set"),
+        (lambda df: df.assign(kwh=float("nan")), "finite numeric"),
+        (lambda df: df.assign(kwh=float("inf")), "finite numeric"),
+        (lambda df: df.assign(kwh=-100), "nonnegative"),
+        (lambda df: df.assign(year=2023.5), "integers"),
+        (lambda df: df.assign(location=None), "nonempty names"),
+    ],
+)
+def test_rejects_unbalanced_or_invalid_energy_table(mutate, match):
+    table = _make_table(
+        "Denver",
+        [
+            (20, 180, 2022, 1000),
+            (20, 180, 2023, 1100),
+            (30, 180, 2022, 1050),
+            (30, 180, 2023, 1150),
+        ],
+    )
+    with pytest.raises(ValueError, match=match):
+        recommend_configuration(mutate(table), [2022])
+
+
+def test_split_and_deterministic_sparse_baseline():
+    table = _make_table(
+        "Denver",
+        [
+            (30, 170, 2022, 1000),
+            (30, 170, 2023, 1100),
+            (40, 180, 2022, 1050),
+            (40, 180, 2023, 1150),
+        ],
+    )
+    with pytest.raises(ValueError, match="later"):
+        recommend_configuration(table, [2023])
+    with pytest.raises(ValueError, match="duplicates"):
+        recommend_configuration(table, [2022, 2022])
+    result = recommend_configuration(table, [2022], latitude=30)
+    baseline = result["baselines"]["lat_tilt"]
+    assert (baseline["tilt"], baseline["azimuth"]) == (30, 170)
+    assert result == recommend_configuration(table.iloc[::-1], [2022], latitude=30)
+    assert result["train_years"] == [2022]
+    assert result["held_out_years"] == [2023]
