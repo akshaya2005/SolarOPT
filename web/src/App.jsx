@@ -1,122 +1,172 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import React, { useState, useMemo } from 'react';
+import { LOCATIONS, DEFAULT_LOCATION_ID } from './data/locations';
+import { useSolarData } from './hooks/useSolarData';
+import {
+  selectOptimalConfiguration,
+  findConfiguration,
+  recalculateBaselines,
+} from './utils/optimization';
 
-function App() {
-  const [count, setCount] = useState(0)
+import { Header } from './components/Header';
+import { LocationSelector } from './components/LocationSelector';
+import { LocationMap } from './components/LocationMap';
+import { RiskSlider } from './components/RiskSlider';
+import { SummaryCards } from './components/SummaryCards';
+import { SolarHeatmap } from './components/SolarHeatmap';
+import { YearlyEnergyChart } from './components/YearlyEnergyChart';
+import { BaselineComparison } from './components/BaselineComparison';
+import { ConfigurationDetail } from './components/ConfigurationDetail';
+
+import './styles/dashboard.css';
+
+export default function App() {
+  const [selectedLocationId, setSelectedLocationId] = useState(DEFAULT_LOCATION_ID);
+  const [lambdaValue, setLambdaValue] = useState(0.5);
+  const [manualSelection, setManualSelection] = useState(null);
+
+  // Active location metadata from registry
+  const activeLocation = useMemo(
+    () => LOCATIONS.find((loc) => loc.id === selectedLocationId) || LOCATIONS[0],
+    [selectedLocationId]
+  );
+
+  // Fetch precomputed data bundle from Vite public directory
+  const { data, loading, error } = useSolarData(activeLocation.file);
+
+  // Reset manual configuration inspection when switching locations
+  const handleLocationChange = (newLocationId) => {
+    setSelectedLocationId(newLocationId);
+    setManualSelection(null);
+  };
+
+  // Compute optimal configuration based on current lambda using training statistics only
+  const optimalConfig = useMemo(() => {
+    if (!data || !data.configurations) return null;
+    return selectOptimalConfiguration(data.configurations, lambdaValue);
+  }, [data, lambdaValue]);
+
+  // Determine currently selected configuration (either manually inspected cell or optimal)
+  const selectedConfig = useMemo(() => {
+    if (!data || !data.configurations) return null;
+    if (manualSelection) {
+      const found = findConfiguration(
+        data.configurations,
+        manualSelection.tilt,
+        manualSelection.azimuth
+      );
+      if (found) return found;
+    }
+    return optimalConfig;
+  }, [data, manualSelection, optimalConfig]);
+
+  // Recalculate baseline comparisons for the active lambda
+  const baselinesData = useMemo(() => {
+    if (!data) return null;
+    return recalculateBaselines(data, lambdaValue);
+  }, [data, lambdaValue]);
+
+  // Reset manual exploration back to the optimal configuration
+  const handleResetToOptimal = () => {
+    setManualSelection(null);
+  };
+
+  // Handle cell selection from the heatmap
+  const handleSelectHeatmapCell = ({ tilt, azimuth }) => {
+    setManualSelection({ tilt, azimuth });
+  };
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="dashboard-root">
+      <Header />
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+      {loading && (
+        <div className="dashboard-loading-overlay">
+          <div className="solar-spinner"></div>
+          <p>Loading NREL NSRDB solar model estimates for {activeLocation.name}...</p>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      )}
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      {error && (
+        <div className="dashboard-error-state">
+          <h3 className="error-title">Unable to Load Solar Model Data</h3>
+          <p>{error}</p>
+          <button
+            type="button"
+            className="popup-select-btn"
+            style={{ width: 'auto', padding: '8px 16px', marginTop: '12px' }}
+            onClick={() => handleLocationChange(selectedLocationId)}
+          >
+            Retry Loading
+          </button>
+        </div>
+      )}
+
+      {!loading && !error && data && (
+        <main className="dashboard-main-container">
+          {/* Left Sidebar */}
+          <aside className="dashboard-sidebar">
+            <LocationSelector
+              selectedLocationId={selectedLocationId}
+              onSelectLocation={handleLocationChange}
+            />
+
+            <LocationMap
+              selectedLocationId={selectedLocationId}
+              onSelectLocation={handleLocationChange}
+            />
+
+            <RiskSlider
+              lambdaValue={lambdaValue}
+              onChangeLambda={setLambdaValue}
+              isMultiYear={activeLocation.isMultiYear}
+            />
+          </aside>
+
+          {/* Main Analytics Content */}
+          <section className="dashboard-content">
+            {/* Top Metric Cards */}
+            <SummaryCards
+              optimalConfig={optimalConfig}
+              selectedConfig={selectedConfig}
+              lambdaValue={lambdaValue}
+              isMultiYear={activeLocation.isMultiYear}
+              onResetToOptimal={handleResetToOptimal}
+            />
+
+            {/* Interactive Energy Optimization Heatmap */}
+            <SolarHeatmap
+              configurations={data.configurations}
+              optimalConfig={optimalConfig}
+              selectedConfig={selectedConfig}
+              lambdaValue={lambdaValue}
+              isMultiYear={activeLocation.isMultiYear}
+              onSelectConfig={handleSelectHeatmapCell}
+            />
+
+            {/* Dual Chart Row: Yearly Series & Baseline Benchmarks */}
+            <div className="dual-chart-row">
+              <YearlyEnergyChart
+                selectedConfig={selectedConfig}
+                trainYears={data.recommendation?.train_years}
+                heldOutYears={data.recommendation?.held_out_years}
+                isMultiYear={activeLocation.isMultiYear}
+              />
+
+              <BaselineComparison
+                baselinesData={baselinesData}
+                lambdaValue={lambdaValue}
+                isMultiYear={activeLocation.isMultiYear}
+              />
+            </div>
+
+            {/* System Configuration & Provenance */}
+            <ConfigurationDetail
+              metadata={data.metadata}
+              schemaVersion={data.schema_version}
+            />
+          </section>
+        </main>
+      )}
+    </div>
+  );
 }
-
-export default App
