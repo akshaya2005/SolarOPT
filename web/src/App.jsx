@@ -16,6 +16,7 @@ import { SolarHeatmap } from './components/SolarHeatmap';
 import { YearlyEnergyChart } from './components/YearlyEnergyChart';
 import { BaselineComparison } from './components/BaselineComparison';
 import { ConfigurationDetail } from './components/ConfigurationDetail';
+import { SunView3D } from './components/SunView3D';
 
 import './styles/dashboard.css';
 
@@ -142,6 +143,17 @@ export default function App() {
               isMultiYear={activeLocation.isMultiYear}
               onSelectConfig={handleSelectHeatmapCell}
             />
+
+            {/* 3D Sunlight View, linked to the selected heatmap configuration */}
+            {selectedConfig && (
+              <SunView3D
+                locationName={activeLocation.name}
+                latitude={activeLocation.coordinates[0]}
+                longitude={activeLocation.coordinates[1]}
+                tilt={selectedConfig.tilt}
+                azimuth={selectedConfig.azimuth}
+              />
+            )}
 
             {/* Dual Chart Row: Yearly Series & Baseline Benchmarks */}
             <div className="dual-chart-row">
